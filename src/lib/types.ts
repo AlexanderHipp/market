@@ -33,13 +33,24 @@ export interface TraceStep {
   error?: string;
 }
 
-export interface AnalysisRequest {
-  input: string;
-  scope?: string;
+export type InterpretationKind =
+  | "company"
+  | "product"
+  | "feature"
+  | "market"
+  | "idea";
+
+export interface Interpretation {
+  kind: InterpretationKind;
+  subject: string;
+  context?: string;
+  marketLens: string;
+  isAmbiguous: boolean;
+  clarificationPrompt?: string;
+  displayLine: string;
 }
 
-export interface InputClassification {
-  type: "company" | "product" | "market" | "idea";
-  needsScope: boolean;
-  suggestedScopePrompt?: string;
+export interface AnalysisRequest {
+  input: string;
+  refinement?: string;
 }

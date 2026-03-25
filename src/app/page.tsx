@@ -1,19 +1,28 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { Search, Loader2, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { CompetitorCard } from "@/components/competitor-card";
 import { TracePanel } from "@/components/trace-panel";
-import { classifyInput } from "@/lib/classifier";
-import type { Competitor, InputClassification } from "@/lib/types";
+import { interpretInput } from "@/lib/interpretation";
+import type { Competitor, Interpretation } from "@/lib/types";
 
 interface AnalysisResult {
   marketSummary: string;
   competitors: Competitor[];
   trace: {
+    interpretation: {
+      response: {
+        rawInput: string;
+        interpretation: Interpretation;
+        refinement?: string;
+        isAmbiguous: boolean;
+        ambiguousBeforeRefinement: boolean;
+      };
+    };
     discovery: { prompt: string; response: unknown };
     explanations: Array<{ name: string; prompt: string; response: unknown }>;
   };
@@ -21,29 +30,26 @@ interface AnalysisResult {
 
 export default function Home() {
   const [input, setInput] = useState("");
-  const [scope, setScope] = useState("");
-  const [classification, setClassification] = useState<InputClassification | null>(null);
+  const [refinement, setRefinement] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Classify input on change
-  useEffect(() => {
-    if (input.trim().length > 3) {
-      setClassification(classifyInput(input));
-    } else {
-      setClassification(null);
-    }
-  }, [input]);
+  const interpretation = useMemo(
+    () => interpretInput(input, refinement),
+    [input, refinement],
+  );
 
-  // Focus textarea on mount
+  const showPlayback = input.trim().length > 3;
+  const canRun = !interpretation.isAmbiguous;
+
   useEffect(() => {
     textareaRef.current?.focus();
   }, []);
 
   const handleAnalyze = useCallback(async () => {
-    if (!input.trim()) return;
+    if (!input.trim() || !canRun) return;
 
     setLoading(true);
     setError(null);
@@ -53,7 +59,10 @@ export default function Home() {
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ input: input.trim(), scope: scope.trim() || undefined }),
+        body: JSON.stringify({
+          input: input.trim(),
+          refinement: refinement.trim() || undefined,
+        }),
       });
 
       const data = await response.json();
@@ -68,12 +77,17 @@ export default function Home() {
     } finally {
       setLoading(false);
     }
-  }, [input, scope]);
+  }, [input, refinement, canRun]);
 
-  // Keyboard shortcut: Cmd/Ctrl + Enter to analyze
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && input.trim() && !loading) {
+      if (
+        (e.metaKey || e.ctrlKey) &&
+        e.key === "Enter" &&
+        input.trim() &&
+        !loading &&
+        canRun
+      ) {
         e.preventDefault();
         handleAnalyze();
       }
@@ -81,12 +95,11 @@ export default function Home() {
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [handleAnalyze, input, loading]);
+  }, [handleAnalyze, input, loading, canRun]);
 
   return (
     <main className="min-h-screen bg-white dark:bg-neutral-950">
       <div className="mx-auto max-w-2xl px-4 py-16">
-        {/* Header */}
         <header className="mb-10">
           <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">
             Find your real competitors
@@ -96,7 +109,6 @@ export default function Home() {
           </p>
         </header>
 
-        {/* Input Section */}
         <div className="space-y-3">
           <Textarea
             ref={textareaRef}
@@ -107,27 +119,37 @@ export default function Home() {
             disabled={loading}
           />
 
-          {/* Scope field - appears when input is broad */}
-          {classification?.needsScope && (
+          {showPlayback && (
+            <div className="rounded-md border border-neutral-200/80 bg-neutral-50/50 px-3 py-2.5 dark:border-neutral-800 dark:bg-neutral-900/40 animate-in fade-in slide-in-from-top-2 duration-200">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-neutral-400">
+                Here&apos;s how I understand this
+              </p>
+              <p className="mt-1 text-sm font-medium text-neutral-900 dark:text-neutral-100 leading-snug">
+                {interpretation.displayLine}
+              </p>
+            </div>
+          )}
+
+          {showPlayback && interpretation.isAmbiguous && (
             <div className="animate-in fade-in slide-in-from-top-2 duration-200">
               <label className="block text-xs font-medium text-neutral-500 mb-1.5">
-                {classification.suggestedScopePrompt || "What specifically should we focus on?"}
+                {interpretation.clarificationPrompt ||
+                  "What specifically should be tracked?"}
               </label>
               <Input
-                value={scope}
-                onChange={(e) => setScope(e.target.value)}
-                placeholder="e.g. B2B SaaS, small businesses, enterprise..."
+                value={refinement}
+                onChange={(e) => setRefinement(e.target.value)}
+                placeholder="e.g. Microsoft Teams, B2B SaaS, small business retailers..."
                 className="text-sm"
                 disabled={loading}
               />
             </div>
           )}
 
-          {/* Action button */}
           <div className="flex items-center justify-between">
             <Button
               onClick={handleAnalyze}
-              disabled={!input.trim() || loading}
+              disabled={!input.trim() || loading || !canRun}
               className="gap-2"
             >
               {loading ? (
@@ -143,10 +165,13 @@ export default function Home() {
               )}
             </Button>
             <span className="text-xs text-neutral-400">
-              {!loading && input.trim() && (
+              {!loading && input.trim() && canRun && (
                 <>
                   <kbd className="px-1.5 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 font-mono">
-                    {typeof navigator !== "undefined" && navigator.userAgent?.includes("Mac") ? "⌘" : "Ctrl"}
+                    {typeof navigator !== "undefined" &&
+                    navigator.userAgent?.includes("Mac")
+                      ? "⌘"
+                      : "Ctrl"}
                   </kbd>
                   <span className="mx-0.5">+</span>
                   <kbd className="px-1.5 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 font-mono">
@@ -158,7 +183,6 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Error State */}
         {error && (
           <div className="mt-6 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
             <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
@@ -166,10 +190,8 @@ export default function Home() {
           </div>
         )}
 
-        {/* Results */}
         {result && (
           <div className="mt-10 animate-in fade-in slide-in-from-bottom-4 duration-300">
-            {/* Market Summary */}
             <div className="mb-8">
               <h2 className="text-xs font-medium uppercase tracking-wider text-neutral-400 mb-2">
                 Market
@@ -179,7 +201,6 @@ export default function Home() {
               </p>
             </div>
 
-            {/* Competitors */}
             <div>
               <h2 className="text-xs font-medium uppercase tracking-wider text-neutral-400 mb-2">
                 Competitors
@@ -191,12 +212,10 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Trace Panel */}
             <TracePanel trace={result.trace} />
           </div>
         )}
 
-        {/* Loading state trace */}
         {loading && !result && (
           <div className="mt-10">
             <TracePanel

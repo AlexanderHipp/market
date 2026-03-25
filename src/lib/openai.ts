@@ -1,18 +1,56 @@
 import OpenAI from "openai";
 import { discoveryResultSchema, competitorExplanationSchema } from "./schemas";
-import type { DiscoveryResult, Competitor } from "./types";
+import type { DiscoveryResult, Competitor, Interpretation } from "./types";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-const DISCOVERY_PROMPT = `You are a market research analyst. Given the following input, identify the competitive landscape.
+function kindInstructions(kind: Interpretation["kind"]): string {
+  switch (kind) {
+    case "company":
+      return "The subject is a company. Identify competitors with overlapping offerings in the stated market lens. Do not list the named company itself.";
+    case "product":
+      return "The subject is a product or company. Identify direct competitors in the same category per the market lens.";
+    case "feature":
+      return "The subject is a feature or capability (context may name the host product). Prioritize competitors known for comparable functionality.";
+    case "market":
+      return "The subject describes a market or category. Identify leading vendors and close alternatives in that space.";
+    case "idea":
+      return "The subject is a concept or opportunity. Infer the nearest product category from the market lens and find established competitors there.";
+    default:
+      return "Use the interpretation fields to stay aligned with user intent.";
+  }
+}
 
-Input: {input}
-{scopeSection}
+export function buildDiscoveryPrompt(
+  rawInput: string,
+  interpretation: Interpretation,
+  refinement?: string,
+): string {
+  const contextLine = interpretation.context
+    ? `- Context (e.g. host product): ${interpretation.context}`
+    : "";
+  const refinementLine = refinement?.trim()
+    ? `User refinement on what to track: ${refinement.trim()}`
+    : "";
+
+  return `You are a market research analyst. Use the confirmed interpretation below—not the raw text alone—to identify the competitive landscape.
+
+Original user input:
+${rawInput}
+${refinementLine ? `\n${refinementLine}\n` : ""}
+Confirmed interpretation:
+- Kind: ${interpretation.kind}
+- Subject: ${interpretation.subject}
+${contextLine}
+- Market lens for competitor discovery: ${interpretation.marketLens}
+
+Framing instructions:
+${kindInstructions(interpretation.kind)}
 
 Return a JSON object with:
-1. marketSummary: A one-sentence description of the market (e.g., "Customer support platforms for SMB and mid-market teams")
+1. marketSummary: A one-sentence description of the market (aligned with the interpretation and market lens)
 2. competitors: An array of 5-8 relevant competitors, each with:
    - name: Company/product name
    - website: Main URL (optional, only if you're confident)
@@ -20,13 +58,14 @@ Return a JSON object with:
    - confidence: "high", "medium", or "low"
 
 Guidelines:
-- Focus on direct competitors
+- Focus on direct competitors given this framing
 - Be specific about the market segment
-- Do not include the input company itself if it's a known company
+- Do not include the input company/product itself if it's a known named entity in the subject
 - Only include competitors you're confident about
 - Prefer well-known, established players over obscure ones
 
 Return ONLY valid JSON, no other text.`;
+}
 
 const EXPLANATION_PROMPT = `You are explaining a competitor in the following market: {market}
 
@@ -64,14 +103,11 @@ export interface ExplanationCallResult {
 }
 
 export async function discoverCompetitors(
-  input: string,
-  scope?: string,
+  rawInput: string,
+  interpretation: Interpretation,
+  refinement?: string,
 ): Promise<DiscoveryCallResult> {
-  const scopeSection = scope ? `Scope/Focus: ${scope}` : "";
-  const prompt = DISCOVERY_PROMPT.replace("{input}", input).replace(
-    "{scopeSection}",
-    scopeSection,
-  );
+  const prompt = buildDiscoveryPrompt(rawInput, interpretation, refinement);
 
   const response = await openai.chat.completions.create({
     model: "gpt-4o",
@@ -111,8 +147,10 @@ export async function explainCompetitor(
 }
 
 export async function analyzeCompetitors(
-  input: string,
-  scope?: string,
+  rawInput: string,
+  refinement: string | undefined,
+  interpretation: Interpretation,
+  ambiguousBeforeRefinement: boolean,
   onProgress?: (
     step: string,
     status: "running" | "done" | "error",
@@ -122,16 +160,37 @@ export async function analyzeCompetitors(
   marketSummary: string;
   competitors: Competitor[];
   trace: {
+    interpretation: {
+      response: {
+        rawInput: string;
+        interpretation: Interpretation;
+        refinement?: string;
+        isAmbiguous: boolean;
+        ambiguousBeforeRefinement: boolean;
+      };
+    };
     discovery: { prompt: string; response: unknown };
     explanations: Array<{ name: string; prompt: string; response: unknown }>;
   };
 }> {
-  // Step 1: Discover competitors
+  const interpretationTrace = {
+    response: {
+      rawInput,
+      interpretation,
+      refinement: refinement?.trim() || undefined,
+      isAmbiguous: interpretation.isAmbiguous,
+      ambiguousBeforeRefinement,
+    },
+  };
+
   onProgress?.("discovery", "running");
-  const discovery = await discoverCompetitors(input, scope);
+  const discovery = await discoverCompetitors(
+    rawInput,
+    interpretation,
+    refinement,
+  );
   onProgress?.("discovery", "done", discovery);
 
-  // Step 2: Explain each competitor
   const explanations: Array<{
     name: string;
     prompt: string;
@@ -164,7 +223,6 @@ export async function analyzeCompetitors(
       onProgress?.(`explain-${discovered.name}`, "error", {
         error: String(error),
       });
-      // Still include the competitor with basic info
       competitors.push({
         name: discovered.name,
         website: discovered.website,
@@ -180,6 +238,7 @@ export async function analyzeCompetitors(
     marketSummary: discovery.result.marketSummary,
     competitors,
     trace: {
+      interpretation: interpretationTrace,
       discovery: {
         prompt: discovery.prompt,
         response: discovery.result,

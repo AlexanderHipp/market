@@ -1,8 +1,13 @@
 "use client";
 
 import { ChevronDown, Check, Loader2, AlertCircle } from "lucide-react";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { Badge } from "@/components/ui/badge";
+import type { Interpretation } from "@/lib/types";
 
 interface TraceStep {
   name: string;
@@ -13,6 +18,15 @@ interface TraceStep {
 
 interface TracePanelProps {
   trace: {
+    interpretation?: {
+      response: {
+        rawInput: string;
+        interpretation: Interpretation;
+        refinement?: string;
+        isAmbiguous: boolean;
+        ambiguousBeforeRefinement: boolean;
+      };
+    };
     discovery?: { prompt: string; response: unknown };
     explanations?: Array<{ name: string; prompt: string; response: unknown }>;
   };
@@ -54,7 +68,9 @@ function TraceStepCard({ step }: { step: TraceStep }) {
           )}
           {step.response !== undefined && step.response !== null && (
             <div>
-              <p className="text-xs font-medium text-neutral-500 mb-1">Response</p>
+              <p className="text-xs font-medium text-neutral-500 mb-1">
+                Response
+              </p>
               <pre className="text-xs bg-neutral-50 p-2 rounded overflow-x-auto whitespace-pre-wrap font-mono text-neutral-700 dark:bg-neutral-900 dark:text-neutral-300">
                 {JSON.stringify(step.response, null, 2)}
               </pre>
@@ -69,22 +85,28 @@ function TraceStepCard({ step }: { step: TraceStep }) {
 export function TracePanel({ trace, isLoading, currentStep }: TracePanelProps) {
   const steps: TraceStep[] = [];
 
-  // Add discovery step
+  if (trace.interpretation) {
+    steps.push({
+      name: "How your input was understood",
+      status: "done",
+      response: trace.interpretation.response,
+    });
+  }
+
   if (trace.discovery) {
     steps.push({
-      name: "Competitor Discovery",
+      name: "Competitor discovery",
       status: "done",
       prompt: trace.discovery.prompt,
       response: trace.discovery.response,
     });
   } else if (isLoading && currentStep === "discovery") {
     steps.push({
-      name: "Competitor Discovery",
+      name: "Competitor discovery",
       status: "running",
     });
   }
 
-  // Add explanation steps
   if (trace.explanations) {
     for (const exp of trace.explanations) {
       steps.push({
@@ -117,12 +139,14 @@ export function TracePanel({ trace, isLoading, currentStep }: TracePanelProps) {
           {steps.map((step, i) => (
             <TraceStepCard key={i} step={step} />
           ))}
-          {isLoading && currentStep && !steps.find(s => s.name.includes(currentStep)) && (
-            <div className="flex items-center gap-2 p-3 text-sm text-neutral-500">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              <span>{currentStep}</span>
-            </div>
-          )}
+          {isLoading &&
+            currentStep &&
+            !steps.find((s) => s.name.includes(currentStep)) && (
+              <div className="flex items-center gap-2 p-3 text-sm text-neutral-500">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                <span>{currentStep}</span>
+              </div>
+            )}
         </div>
       </CollapsibleContent>
     </Collapsible>
