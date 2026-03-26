@@ -1,4 +1,10 @@
 import type { InputClassification } from "./types";
+import {
+  KNOWN_LENS,
+  lookupKnownLens,
+  inputMatchesMegaCorp,
+  normalizeCompanyKey,
+} from "./known-companies";
 
 // Known company patterns - simple heuristics
 const COMPANY_INDICATORS = [
@@ -26,14 +32,36 @@ const BROAD_INDICATORS = [
 export function classifyInput(input: string): InputClassification {
   const trimmed = input.trim();
   const wordCount = trimmed.split(/\s+/).length;
+  const norm = normalizeCompanyKey(trimmed);
+
+  // Recognized product/company slugs from KNOWN_LENS (incl. lowercase e.g. intercom)
+  if (wordCount <= 2 || KNOWN_LENS[norm] !== undefined) {
+    const lens = lookupKnownLens(trimmed);
+    if (lens && (wordCount <= 2 || KNOWN_LENS[norm] !== undefined)) {
+      const mega = inputMatchesMegaCorp(trimmed);
+      const focusedNamedProduct = KNOWN_LENS[norm] !== undefined;
+      return {
+        type: "company",
+        needsScope: mega && !focusedNamedProduct,
+        suggestedScopePrompt:
+          mega && !focusedNamedProduct
+            ? "Which product, region, or segment should we focus on?"
+            : undefined,
+      };
+    }
+  }
 
   // Very short inputs (1-2 words) that look like company names
   if (wordCount <= 2) {
     const looksLikeCompany = COMPANY_INDICATORS.some(pattern => pattern.test(trimmed));
     if (looksLikeCompany) {
+      const mega = inputMatchesMegaCorp(trimmed);
       return {
         type: "company",
-        needsScope: false,
+        needsScope: mega,
+        suggestedScopePrompt: mega
+          ? "Which product, region, or segment should we focus on?"
+          : undefined,
       };
     }
   }

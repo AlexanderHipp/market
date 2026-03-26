@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import { discoveryResultSchema, competitorExplanationSchema } from "./schemas";
 import type { DiscoveryResult, Competitor } from "./types";
+import { getCompanyResearchContext } from "./known-companies";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -67,7 +68,18 @@ export async function discoverCompetitors(
   input: string,
   scope?: string,
 ): Promise<DiscoveryCallResult> {
-  const scopeSection = scope ? `Scope/Focus: ${scope}` : "";
+  const { lensDescription, isMegaCorp } = getCompanyResearchContext(input);
+  const extraLines: string[] = [];
+  if (scope) extraLines.push(`Scope/Focus: ${scope}`);
+  if (lensDescription) {
+    extraLines.push(`Known company context: ${lensDescription}`);
+  }
+  if (isMegaCorp) {
+    extraLines.push(
+      "Note: The input may refer to a large diversified company. Focus on the specific product line or market segment implied by the input and scope; avoid listing unrelated business units as direct competitors.",
+    );
+  }
+  const scopeSection = extraLines.length > 0 ? `\n${extraLines.join("\n")}` : "";
   const prompt = DISCOVERY_PROMPT.replace("{input}", input).replace(
     "{scopeSection}",
     scopeSection,
