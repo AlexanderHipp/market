@@ -1,7 +1,13 @@
 import OpenAI from "openai";
-import { discoveryResultSchema, competitorExplanationSchema } from "./schemas";
+import {
+  discoveryResultSchema,
+  competitorExplanationSchema,
+  marketFrameDraftSchema,
+} from "./schemas";
+import type { MarketFrameDraft } from "./schemas";
 import type { DiscoveryResult, Competitor } from "./types";
 import { getCompanyResearchContext } from "./known-companies";
+import { refinementHintsToPromptLines } from "./framing-prompt";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -47,6 +53,29 @@ Guidelines:
 
 Return ONLY valid JSON, no other text.`;
 
+const MARKET_FRAME_PROMPT = `You are a product strategist. Turn the user's vague input into a clear, decision-ready market frame.
+
+User input: {input}
+{classifierSection}
+{scopeSection}
+{refinementSection}
+
+Return a single JSON object with these keys:
+- subject: string — what we are evaluating in one clear phrase
+- interpretationKind: one of: "product", "company", "feature", "market", "idea", "campaign", "other"
+- marketLens: string — the market or category lens (one or two sentences, specific)
+- directAlternatives: string[] — 4-8 named competitors or close substitutes (names only or very short phrases)
+- adjacentAlternatives: string[] — 2-6 adjacent options (different category but relevant tradeoffs)
+- rationale: string — 2-4 sentences explaining why this frame fits; no fluff
+- confidence: "high", "medium", or "low"
+- partial: boolean — true if you had to guess on any major field
+
+Guidelines:
+- Be specific about segment (e.g. geography, motion, ICP) when it matters
+- If the input is ambiguous, state assumptions briefly in rationale and set partial to true
+- Do not include markdown or code fences
+- Return ONLY valid JSON`;
+
 export interface DiscoveryCallResult {
   result: DiscoveryResult;
   prompt: string;
@@ -62,6 +91,47 @@ export interface ExplanationCallResult {
   };
   prompt: string;
   rawResponse: string;
+}
+
+export interface GenerateMarketFrameParams {
+  effectiveInput: string;
+  scope?: string;
+  classifierSummary?: string;
+  refinementHints?: string[];
+}
+
+export async function generateMarketFrame(
+  params: GenerateMarketFrameParams,
+): Promise<{ result: MarketFrameDraft; prompt: string; rawResponse: string }> {
+  const { effectiveInput, scope, classifierSummary, refinementHints } = params;
+  const scopeSection =
+    scope?.trim() ? `\nScope/Focus (user-provided): ${scope.trim()}` : "";
+  const classifierSection = classifierSummary
+    ? `\nClassifier hint (heuristic): ${classifierSummary}`
+    : "";
+  const hintLines = refinementHintsToPromptLines(refinementHints ?? []);
+  const refinementSection =
+    hintLines.length > 0
+      ? `\nRefinement requests (apply strictly):\n${hintLines.map((l) => `- ${l}`).join("\n")}`
+      : "";
+
+  const prompt = MARKET_FRAME_PROMPT.replace("{input}", effectiveInput)
+    .replace("{scopeSection}", scopeSection)
+    .replace("{classifierSection}", classifierSection)
+    .replace("{refinementSection}", refinementSection);
+
+  const response = await openai.chat.completions.create({
+    model: "gpt-4o",
+    messages: [{ role: "user", content: prompt }],
+    temperature: 0.35,
+    response_format: { type: "json_object" },
+  });
+
+  const rawResponse = response.choices[0]?.message?.content || "{}";
+  const parsed = JSON.parse(rawResponse);
+  const result = marketFrameDraftSchema.parse(parsed);
+
+  return { result, prompt, rawResponse };
 }
 
 export async function discoverCompetitors(
